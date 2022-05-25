@@ -14,12 +14,28 @@ bitflags! {
   /// |  1   | Z   |	Zero                              |
   /// |  0   | C   |	Carry                             |
   pub struct Flags: u8 {
+    /// Carry
     const C = 0b00000001;
+
+    /// Zero
     const Z = 0b00000010;
+
+    /// Interrupt (IRQ disable)
     const I = 0b00000100;
+
+    /// Decimal (use BCD for arithmetics)
     const D = 0b00001000;
+
+    /// Break
     const B = 0b00010000;
+
+    /// ignored
+    const U = 0b00100000;
+
+    /// Overflow
     const V = 0b01000000;
+
+    /// Negative
     const N = 0b10000000;
   }
 }

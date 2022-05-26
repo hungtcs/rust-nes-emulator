@@ -13,7 +13,7 @@ use self::status_flags::Flags;
 
 pub struct CPU {
   pub registers: Registers,
-  memory: Memory,
+  pub memory: Memory,
 }
 
 impl CPU {
@@ -80,10 +80,13 @@ impl CPU {
     return hi << 8 | lo;
   }
 
-  fn load(&mut self, program: Vec<u8>) {
+  pub fn load(&mut self, program: Vec<u8>) {
+    self.memory.memory[0x0600..(0x0600 + program.len())].copy_from_slice(&program[..]);
+    self.memory.write_u16(0xFFFC, 0x0600);
+
     // TODO
-    self.memory.memory[0x8000..(0x8000 + program.len())].copy_from_slice(&program[..]);
-    self.memory.write_u16(0xFFFC, 0x8000);
+    // self.memory.memory[0x8000..(0x8000 + program.len())].copy_from_slice(&program[..]);
+    // self.memory.write_u16(0xFFFC, 0x8000);
   }
 
   /// NES 平台有一个特殊的机制来标记 CPU 应该从哪里开始执行。
@@ -91,7 +94,7 @@ impl CPU {
   ///
   /// - 重置状态（寄存器和标志）
   /// - 将 `program_counter` 寄存器设置为存储在 `0xFFFC` 的 16 位地址
-  fn reset(&mut self) {
+  pub fn reset(&mut self) {
     self.registers.reset(self.memory.read_u16(0xFFFC));
   }
 
@@ -102,12 +105,32 @@ impl CPU {
   }
 
   pub fn run(&mut self) {
+    self.run_with_callback(
+      |_| {
+
+      },
+    );
+  }
+
+  pub fn run_with_callback<C>(&mut self, mut callback: C) where C: FnMut(&mut CPU) {
     let ref opcodes: HashMap<u8, &'static Opcode> = *OPCODES_MAP;
+
+    println!("PC   Code A  X  Y  Status");
 
     loop {
       let code = self.memory.read(self.registers.program_counter);
       let opcode = opcodes.get(&code).expect(&format!("Opcode {:x} is not recognized", code));
       let mode = &opcode.mode;
+
+      print!(
+        "{:04X} {:02X}   {:02X} {:02X} {:02X} {:08b} \t",
+        self.registers.program_counter,
+        code,
+        self.registers.a,
+        self.registers.x,
+        self.registers.y,
+        self.registers.status.bits(),
+      );
 
       self.registers.program_counter += 1;
 
@@ -272,6 +295,10 @@ impl CPU {
       if program_counter_state == self.registers.program_counter {
         self.registers.program_counter += (opcode.length - 1) as u16;
       }
+
+      callback(self);
+
+      print!("\n");
     }
   }
 
@@ -283,10 +310,12 @@ impl CPU {
   /// LDA
   fn load_accumulator_with_memory(&mut self, mode: &AddressingMode) {
     let address = self.get_operand_address(mode);
-    let param = self.memory.read(address);
+    let data = self.memory.read(address);
 
-    self.registers.a = param;
+    self.registers.a = data;
     self.registers.set_nz_flags(self.registers.a);
+
+    print!("LDA {:02X}\t{:?}", data, mode);
   }
 
   /// LDX
@@ -447,7 +476,10 @@ impl CPU {
   fn subtract_memory_from_accumulator_with_borrow(&mut self, mode: &AddressingMode) {
     let address = self.get_operand_address(mode);
     let data = self.memory.read(address);
-    self.registers.add_to_a((data as i8).wrapping_neg().wrapping_sub(-1) as u8);
+    // WHY
+    self.registers.add_to_a((data as i8).wrapping_neg().wrapping_sub(1) as u8);
+
+    print!("SBC {:02X}\t{:?}", data, mode);
   }
 
 
@@ -633,7 +665,7 @@ impl CPU {
   /// (An offset of #0 corresponds to the immedately following address — or a rather odd and expensive NOP.)
   fn branch(&mut self, condition: bool) {
     if condition {
-      let offset = self.memory.read(self.registers.program_counter);
+      let offset = self.memory.read(self.registers.program_counter) as i8;
       self.registers.program_counter = self.registers.program_counter
         .wrapping_add(1).wrapping_add(offset as u16);
     }
@@ -697,6 +729,8 @@ impl CPU {
     self.stack_push_u16(self.registers.program_counter + 2 - 1);
     let address = self.get_operand_address(&AddressingMode::Absolute);
     self.registers.program_counter = address;
+
+    print!("JSR {:02X}", address);
   }
 
   /// RTS

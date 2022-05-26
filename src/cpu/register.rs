@@ -57,18 +57,9 @@ impl Registers {
 
   pub fn set_nz_flags(&mut self, result: u8) {
     // 是否为0
-    if result == 0 {
-      self.status.insert(Flags::Z);
-    } else {
-      self.status.remove(Flags::Z);
-    }
-
+    self.status.set(Flags::Z, result == 0);
     // 是否为负数
-    if result & 0x80 != 0 {
-      self.status.insert(Flags::N);
-    } else {
-      self.status.remove(Flags::N);
-    }
+    self.status.set(Flags::N, result & 0x80 == 0x80);
   }
 
   /// ## [The 6502 overflow flag explained mathematically](http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html)

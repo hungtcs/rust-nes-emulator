@@ -81,7 +81,7 @@ pub enum AddressingMode {
   /// STA $f1     ;$f1 is $cc
   /// JMP ($00f0) ;the value of address $00f0 is $cc01, dereferences to $cc01
   /// ```
-  // Indirect,
+  Indirect,
 
   /// 这个有点奇怪。这就像零页、X和间接页之间的交叉。基本上，取零页地址，将X寄存器的值添加到其中，然后使用该值查找两字节地址。例如：
   ///

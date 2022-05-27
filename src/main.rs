@@ -1,5 +1,7 @@
 pub mod cpu;
+pub mod bus;
 
+use bus::Bus;
 use rand::Rng;
 use sdl2::{pixels::{PixelFormatEnum, Color}, event::Event, EventPump, keyboard::Keycode};
 
@@ -19,11 +21,11 @@ fn color(byte: u8) -> Color {
   }
 }
 
-fn read_screen_state(cpu: &CPU, frame: &mut [u8; 32 * 3 * 32]) -> bool {
+fn read_screen_state(cpu: &mut CPU, frame: &mut [u8; 32 * 3 * 32]) -> bool {
   let mut frame_idx = 0;
   let mut update = false;
   for i in 0x0200..0x600 {
-      let color_idx = cpu.memory.read(i as u16);
+      let color_idx = cpu.bus.read(i as u16);
       let (b1, b2, b3) = color(color_idx).rgb();
       if frame[frame_idx] != b1 || frame[frame_idx + 1] != b2 || frame[frame_idx + 2] != b3 {
           frame[frame_idx] = b1;
@@ -43,16 +45,16 @@ fn handle_user_input(cpu: &mut CPU, event_pump: &mut EventPump) {
         std::process::exit(0)
       },
       Event::KeyDown { keycode: Some(Keycode::W), .. } => {
-        cpu.memory.write(0xff, 0x77);
+        cpu.bus.write(0xff, 0x77);
       },
       Event::KeyDown { keycode: Some(Keycode::S), .. } => {
-        cpu.memory.write(0xff, 0x73);
+        cpu.bus.write(0xff, 0x73);
       },
       Event::KeyDown { keycode: Some(Keycode::A), .. } => {
-        cpu.memory.write(0xff, 0x61);
+        cpu.bus.write(0xff, 0x61);
       },
       Event::KeyDown { keycode: Some(Keycode::D), .. } => {
-        cpu.memory.write(0xff, 0x64);
+        cpu.bus.write(0xff, 0x64);
       }
       _ => {/* do nothing */}
     }
@@ -101,15 +103,17 @@ fn main() {
   let mut screen_state = [0 as u8; 32 * 3 * 32];
   let mut rng = rand::thread_rng();
 
-  let mut cpu = CPU::new();
+  let bus = Bus::new();
+  let mut cpu = CPU::new(bus);
   cpu.load(code);
   cpu.reset();
+  cpu.registers.program_counter = 0x0600;
 
   cpu.run_with_callback(
     move |cpu| {
       handle_user_input(cpu, &mut event_pump);
 
-      cpu.memory.write(0xFE, rng.gen_range(1..16));
+      cpu.bus.write(0xFE, rng.gen_range(1..16));
 
       if read_screen_state(cpu, &mut screen_state) {
         texture.update(None, &screen_state, 32 * 3).unwrap();
@@ -121,6 +125,5 @@ fn main() {
       ::std::thread::sleep(std::time::Duration::new(0, 70_000));
     }
   );
-
 
 }

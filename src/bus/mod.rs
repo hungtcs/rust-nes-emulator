@@ -1,17 +1,21 @@
 
+use crate::cartridge::Cartridge;
+
 pub struct Bus {
   cpu_vram: [u8; 0x800],
+  cartridge: Cartridge,
 }
 
 impl Bus {
 
-  pub fn new<'a>() -> Self {
+  pub fn new<'a>(cartridge: Cartridge) -> Self {
     return Bus {
       cpu_vram: [0; 0x800],
+      cartridge,
     };
   }
 
-  pub fn read(&self, address: u16) -> u8 {
+  pub fn read(&self, mut address: u16) -> u8 {
     return match address {
       // internal RAM
       0x0000..=0x1FFF => self.cpu_vram[(address & 0x7FF) as usize],
@@ -31,6 +35,13 @@ impl Bus {
       // 0x4020..=0xFFFF => {
 
       // }
+      0x8000..=0xFFFF => {
+        // 16 * 1024 = 0x4000
+        if self.cartridge.prg_rom.len() == 0x4000 {
+          address = address & 0xBFFF;
+        }
+        return self.cartridge.prg_rom[(address & 0x7FFF) as usize];
+      },
       _ => {
         println!("Ignoring mem access at {:04X}", address);
         return 0;
@@ -44,6 +55,9 @@ impl Bus {
       0x0000..=0x1FFF => self.cpu_vram[(address & 0x7FF) as usize] = data,
       0x2000..=0x3FFF => {
         todo!("PPU memory not impl {:04X}", address);
+      }
+      0x8000..=0xFFFF => {
+        panic!("Attempt to write to Cartridge ROM space");
       }
       _ => {
         println!("Ignoring mem write-access at {:04X}", address);

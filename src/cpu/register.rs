@@ -50,7 +50,8 @@ impl Registers {
     self.y = 0x00;
     // NV-B DIZC
     // 0011 0100
-    self.status = Flags::from_bits_truncate(0x34);
+    // self.status = Flags::from_bits_truncate(0x34);
+    self.status = Flags::from_bits_truncate(0x24);
     self.stack_pointer = 0xFD;
     self.program_counter = program_counter;
   }

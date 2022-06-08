@@ -1,14 +1,14 @@
-mod addressing_mode;
-mod opcodes;
-mod register;
-mod status_flags;
+pub mod addressing_mode;
+pub mod opcodes;
+pub mod register;
+pub mod status_flags;
 
-use std::collections::HashMap;
-use crate::bus::Bus;
 use self::addressing_mode::AddressingMode;
 use self::opcodes::{Opcode, OPCODES_MAP};
 use self::register::Registers;
 use self::status_flags::Flags;
+use crate::bus::Bus;
+use std::collections::HashMap;
 
 pub struct CPU {
   pub bus: Bus,
@@ -20,19 +20,18 @@ impl CPU {
     return CPU {
       bus,
       registers: Registers::new(),
-    }
+    };
   }
 
-  fn get_operand_address(&self, mode: &AddressingMode) -> u16 {
+  pub fn get_absolute_address(&self, mode: &AddressingMode, address: u16) -> u16 {
     use AddressingMode::*;
     match mode {
-      Immediate => self.registers.program_counter,
-      Absolute => self.bus.read_u16(self.registers.program_counter),
-      AbsoluteX => self.bus.read_u16(self.registers.program_counter).wrapping_add(self.registers.x as u16),
-      AbsoluteY => self.bus.read_u16(self.registers.program_counter).wrapping_add(self.registers.y as u16),
-      ZeroPage => self.bus.read(self.registers.program_counter) as u16,
-      ZeroPageX => self.bus.read(self.registers.program_counter).wrapping_add(self.registers.x) as u16,
-      ZeroPageY => self.bus.read(self.registers.program_counter).wrapping_add(self.registers.y) as u16,
+      Absolute => self.bus.read_u16(address),
+      AbsoluteX => self.bus.read_u16(address).wrapping_add(self.registers.x as u16),
+      AbsoluteY => self.bus.read_u16(address).wrapping_add(self.registers.y as u16),
+      ZeroPage => self.bus.read(address) as u16,
+      ZeroPageX => self.bus.read(address).wrapping_add(self.registers.x) as u16,
+      ZeroPageY => self.bus.read(address).wrapping_add(self.registers.y) as u16,
       Indirect => {
         // http://www.6502.org/tutorials/6502opcodes.html#JMP
         // Indirect 仅适用于 JMP 指令
@@ -40,18 +39,37 @@ impl CPU {
         // For example if address $3000 contains $40, $30FF contains $80, and $3100 contains $50,
         // the result of JMP ($30FF) will be a transfer of control to $4080 rather than $5080 as you intended
         // i.e. the 6502 took the low byte of the address from $30FF and the high byte from $3000.
-        let indirect_address = self.bus.read_u16(self.registers.program_counter);
+        let indirect_address = self.bus.read_u16(address);
         if indirect_address & 0x00FF == 0x00FF {
           let lo = self.bus.read(indirect_address);
           let hi = self.bus.read(indirect_address & 0xFF00);
-          return self.bus.read_u16((hi as u16) << 8 | (lo as u16));
+          return (hi as u16) << 8 | (lo as u16);
         } else {
           return self.bus.read_u16(indirect_address);
         }
-      },
-      IndexedIndirect => self.bus.read_u16(self.bus.read(self.registers.program_counter).wrapping_add(self.registers.x) as u16),
-      IndirectIndexed => self.bus.read_u16(self.bus.read(self.registers.program_counter) as u16).wrapping_add(self.registers.y as u16),
+      }
+      // !!地址处理和read_u16不同。
+      IndexedIndirect => {
+        let pointer = self.bus.read(address).wrapping_add(self.registers.x);
+        let lo = self.bus.read(pointer as u16);
+        let hi = self.bus.read(pointer.wrapping_add(1) as u16);
+        return ((hi as u16) << 8) | (lo as u16);
+      }
+      IndirectIndexed => {
+        let param = self.bus.read(address);
+        let lo = self.bus.read(param as u16);
+        let hi = self.bus.read(param.wrapping_add(1) as u16);
+        let indirect_address = ((hi as u16) << 8) | (lo as u16);
+        return indirect_address.wrapping_add(self.registers.y as u16);
+      }
       _ => panic!("addressing mode {:?} is not support", mode),
+    }
+  }
+
+  fn get_operand_address(&self, mode: &AddressingMode) -> u16 {
+    match mode {
+      AddressingMode::Immediate => self.registers.program_counter,
+      _ => self.get_absolute_address(mode, self.registers.program_counter),
     }
   }
 
@@ -106,36 +124,27 @@ impl CPU {
   }
 
   pub fn run(&mut self) {
-    self.run_with_callback(
-      |_| {
-
-      },
-    );
+    self.run_with_callback(|_| {});
   }
 
-  pub fn run_with_callback<C>(&mut self, mut callback: C) where C: FnMut(&mut CPU) {
+  pub fn run_with_callback<C>(&mut self, mut callback: C)
+  where
+    C: FnMut(&mut CPU),
+  {
     let ref opcodes: HashMap<u8, &'static Opcode> = *OPCODES_MAP;
 
-    println!("PC   Code A  X  Y  Status");
-
     loop {
+      callback(self);
       let code = self.bus.read(self.registers.program_counter);
-      let opcode = opcodes.get(&code).expect(&format!("Opcode {:x} is not recognized", code));
-      let mode = &opcode.mode;
-
-      print!(
-        "{:04X} {:02X}   {:02X} {:02X} {:02X} {:08b} \t",
-        self.registers.program_counter,
-        code,
-        self.registers.a,
-        self.registers.x,
-        self.registers.y,
-        self.registers.status.bits(),
-      );
 
       self.registers.program_counter += 1;
-
       let program_counter_state = self.registers.program_counter;
+
+      let opcode = opcodes
+        .get(&code)
+        .expect(&format!("Opcode {:x} is not recognized", code));
+
+      let mode = &opcode.mode;
 
       match code {
         // Transfer Instructions
@@ -182,7 +191,9 @@ impl CPU {
         // DEY
         0x88 => self.decrement_index_y_by_one(),
         // INC
-        0xE6 | 0xF6 | 0xEE | 0xFE => self.increment_memory_by_one(mode),
+        0xE6 | 0xF6 | 0xEE | 0xFE => {
+          self.increment_memory_by_one(mode);
+        }
         // INX
         0xE8 => self.increment_index_x_by_one(),
         // INY
@@ -192,7 +203,9 @@ impl CPU {
         // ADC
         0x69 | 0x65 | 0x75 | 0x6D | 0x7D | 0x79 | 0x61 | 0x71 => self.add_memory_to_accumulator_with_carry(mode),
         // SBC
-        0xE9 | 0xE5 | 0xF5 | 0xED | 0xFD | 0xF9 | 0xE1 | 0xF1 => self.subtract_memory_from_accumulator_with_borrow(mode),
+        0xE9 | 0xE5 | 0xF5 | 0xED | 0xFD | 0xF9 | 0xE1 | 0xF1 => {
+          self.subtract_memory_from_accumulator_with_borrow(mode)
+        }
 
         // Logical Operations
         // AND
@@ -205,16 +218,24 @@ impl CPU {
         // Shift & Rotate Instructions
         // ASL
         0x0A => self.shift_left_one_bit_accumulator(),
-        0x06 | 0x16 | 0x0E | 0x1E => self.shift_left_one_bit_memory(mode),
+        0x06 | 0x16 | 0x0E | 0x1E => {
+          self.shift_left_one_bit_memory(mode);
+        },
         // LSR
         0x4A => self.shift_one_bit_right_accumulator(),
-        0x46 | 0x56 | 0x4E | 0x5E => self.shift_one_bit_right_memory(mode),
+        0x46 | 0x56 | 0x4E | 0x5E => {
+          self.shift_one_bit_right_memory(mode);
+        },
         // ROL
         0x2A => self.rotate_one_bit_left_accumulator(),
-        0x26 | 0x36 | 0x2E | 0x3E => self.rotate_one_bit_left_memory(mode),
+        0x26 | 0x36 | 0x2E | 0x3E => {
+          self.rotate_one_bit_left_memory(mode);
+        },
         // ROR
         0x6A => self.rotate_one_bit_right_accumulator(),
-        0x66 | 0x76 | 0x6E | 0x7E => self.rotate_one_bit_right_memory(mode),
+        0x66 | 0x76 | 0x6E | 0x7E => {
+          self.rotate_one_bit_right_memory(mode);
+        },
 
         // Flag Instructions
         // CLC
@@ -277,34 +298,55 @@ impl CPU {
         // BIT
         0x24 | 0x2C => self.test_bits_in_memory_with_accumulator(mode),
         // NOP
-        0xEA => {},
+        0xEA => {}
 
-        // Illegal Opcodes
-        // MOP implied 1byte	2cycles
-        0x1A | 0x3A | 0x5A | 0x7A | 0xDA | 0xFA => {},
-        // MOP immediate 2byte	2cycles
-        0x80 | 0x82 | 0x89 | 0xC2 | 0xE2 => {},
-        // NOP need read data
-        0x04 | 0x44 | 0x64 | 0x14 | 0x34 | 0x54 | 0x74 | 0xD4 | 0xF4 | 0x0C | 0x1C | 0x3C | 0x5C | 0x7C | 0xDC | 0xFC => {
-          todo!();
-        },
+        // "Illegal" Opcodes and Undocumented Instructions
+        // ALR
+        0x4B => self.alr(mode),
+        // ANC, ANC2
+        0x0B | 0x2B => self.anc(mode),
+        // ANE, AXX
+        0x8B => self.ane_xaa(mode),
+        // ARR
+        // 0x6B => self.arr(mode),
+        // DCP, DCM
+        0xC7 | 0xD7 | 0xCF | 0xDF | 0xDB | 0xC3 | 0xD3 => self.dcp_dcm(mode),
+        // ISC, ISB, INS
+        0xE7 | 0xF7 | 0xEF | 0xFF | 0xFB | 0xE3 | 0xF3 => self.isc_isb_ins(mode),
+        // LAS, LAR
+        0xBB => self.las_lar(mode),
+        // LAX
+        0xA7 | 0xB7 | 0xAF | 0xBF | 0xA3 | 0xB3 => self.lax(mode),
+        // RLA
+        0x27 | 0x37 | 0x2F | 0x3F | 0x3B | 0x23 | 0x33 => self.rla(mode),
+        // RRA
+        0x67 | 0x77 | 0x6F | 0x7F | 0x7B | 0x63 | 0x73 => self.rra(mode),
+        // SAX, AXS, AAX
+        0x87 | 0x97 | 0x8F | 0x83 => self.sax_axs_aax(mode),
+        // SLO, ASO
+        0x07 | 0x17 | 0x0F | 0x1F | 0x1B | 0x03 | 0x13 => self.slo_aso(mode),
+        // SRE, LSE
+        0x47 | 0x57 | 0x4F | 0x5F | 0x5B | 0x43 | 0x53 => self.sre_lse(mode),
+        // USBC
+        0xEB => self.subtract_memory_from_accumulator_with_borrow(mode),
+        // NOPs
+        0x1A | 0x3A | 0x5A | 0x7A | 0xDA | 0xFA => {}
+        0x80 | 0x82 | 0x89 | 0xC2 | 0xE2 => {}
+        0x04 | 0x44 | 0x64 | 0x14 | 0x34 | 0x54 | 0x74 | 0xD4 | 0xF4 | 0x0C => {}
+        0x1C | 0x3C | 0x5C | 0x7C | 0xDC | 0xFC => {}
         _ => {
-          panic!("opcode {:x} not support", code);
+          panic!("opcode {:02X} not support", code);
         }
       }
 
       if program_counter_state == self.registers.program_counter {
         self.registers.program_counter += (opcode.length - 1) as u16;
       }
-
-      callback(self);
-
-      print!("\n");
     }
   }
-
 }
 
+/// impl for instructions
 impl CPU {
   /// Transfer Instructions
 
@@ -315,8 +357,6 @@ impl CPU {
 
     self.registers.a = data;
     self.registers.set_nz_flags(self.registers.a);
-
-    print!("LDA {:02X}\t{:?}", data, mode);
   }
 
   /// LDX
@@ -388,7 +428,6 @@ impl CPU {
     self.registers.set_nz_flags(self.registers.a);
   }
 
-
   /// Stack Instructions
   /// PHA
   fn push_accumulator_on_stack(&mut self) {
@@ -419,7 +458,6 @@ impl CPU {
     self.registers.status.insert(Flags::U);
   }
 
-
   /// Decrements & Increments
   /// DEC
   fn decrement_memory_by_one(&mut self, mode: &AddressingMode) {
@@ -443,12 +481,13 @@ impl CPU {
   }
 
   /// INC
-  fn increment_memory_by_one(&mut self, mode: &AddressingMode) {
+  fn increment_memory_by_one(&mut self, mode: &AddressingMode) -> u8 {
     let address = self.get_operand_address(mode);
     let mut data = self.bus.read(address);
     data = data.wrapping_add(1);
     self.bus.write(address, data);
     self.registers.set_nz_flags(data);
+    return data;
   }
 
   /// INX
@@ -462,7 +501,6 @@ impl CPU {
     self.registers.y = self.registers.y.wrapping_add(1);
     self.registers.set_nz_flags(self.registers.y);
   }
-
 
   /// Arithmetic Operations
   /// ADC
@@ -478,11 +516,10 @@ impl CPU {
     let address = self.get_operand_address(mode);
     let data = self.bus.read(address);
     // WHY
-    self.registers.add_to_a((data as i8).wrapping_neg().wrapping_sub(1) as u8);
-
-    print!("SBC {:02X}\t{:?}", data, mode);
+    self
+      .registers
+      .add_to_a((data as i8).wrapping_neg().wrapping_sub(1) as u8);
   }
-
 
   /// Logical Operations
   /// AND
@@ -509,13 +546,12 @@ impl CPU {
     self.registers.set_nz_flags(self.registers.a);
   }
 
-
   /// ### Shift & Rotate Instructions
   ///
   /// All shift and rotate instructions preserve the bit shifted out in the carry flag.
   ///
   /// ASL
-  fn shift_left_one_bit_memory(&mut self, mode: &AddressingMode) {
+  fn shift_left_one_bit_memory(&mut self, mode: &AddressingMode) -> u8 {
     let address = self.get_operand_address(mode);
     let mut data = self.bus.read(address);
 
@@ -523,6 +559,7 @@ impl CPU {
     data = data << 1;
     self.bus.write(address, data);
     self.registers.set_nz_flags(data);
+    return data;
   }
 
   /// ASL accumulator
@@ -533,13 +570,14 @@ impl CPU {
   }
 
   /// LSR
-  fn shift_one_bit_right_memory(&mut self, mode: &AddressingMode) {
+  fn shift_one_bit_right_memory(&mut self, mode: &AddressingMode) -> u8 {
     let address = self.get_operand_address(mode);
     let mut data = self.bus.read(address);
     self.registers.status.set(Flags::C, data & 0x01 == 1);
     data = data >> 1;
     self.bus.write(address, data);
     self.registers.set_nz_flags(data);
+    return data;
   }
 
   /// LSR accumulator
@@ -550,7 +588,7 @@ impl CPU {
   }
 
   /// ROL
-  fn rotate_one_bit_left_memory(&mut self, mode: &AddressingMode) {
+  fn rotate_one_bit_left_memory(&mut self, mode: &AddressingMode) -> u8 {
     let address = self.get_operand_address(mode);
     let mut data = self.bus.read(address);
     let carry = self.registers.status.contains(Flags::C);
@@ -558,6 +596,7 @@ impl CPU {
     data = (data << 1) | (if carry { 0x01 } else { 0x00 });
     self.bus.write(address, data);
     self.registers.set_nz_flags(data);
+    return data;
   }
 
   /// ROL accumulator
@@ -569,7 +608,7 @@ impl CPU {
   }
 
   /// ROR
-  fn rotate_one_bit_right_memory(&mut self, mode: &AddressingMode) {
+  fn rotate_one_bit_right_memory(&mut self, mode: &AddressingMode) -> u8 {
     let address = self.get_operand_address(mode);
     let mut data = self.bus.read(address);
     let carry = self.registers.status.contains(Flags::C);
@@ -578,6 +617,7 @@ impl CPU {
     data = (data >> 1) | (if carry { 0x80 } else { 0x00 });
     self.bus.write(address, data);
     self.registers.set_nz_flags(data);
+    return data;
   }
 
   /// ROR accumulator
@@ -587,7 +627,6 @@ impl CPU {
     self.registers.a = (self.registers.a >> 1) | (if carry { 0x80 } else { 0x00 });
     self.registers.set_nz_flags(self.registers.a);
   }
-
 
   /// Flag Instructions
   /// CLC
@@ -625,7 +664,6 @@ impl CPU {
     self.registers.status.insert(Flags::I);
   }
 
-
   /// Comparisons
   /// Generally, comparison instructions subtract the operand from the given register without affecting this register.
   /// Flags are still set as with a normal subtraction and thus the relation of the two values becomes accessible by
@@ -659,7 +697,6 @@ impl CPU {
     self.compare_memory_with(mode, self.registers.y);
   }
 
-
   /// Conditional Branch Instructions
   ///
   /// Branch targets are relative, signed 8-bit address offsets.
@@ -667,8 +704,11 @@ impl CPU {
   fn branch(&mut self, condition: bool) {
     if condition {
       let offset = self.bus.read(self.registers.program_counter) as i8;
-      self.registers.program_counter = self.registers.program_counter
-        .wrapping_add(1).wrapping_add(offset as u16);
+      self.registers.program_counter = self
+        .registers
+        .program_counter
+        .wrapping_add(1)
+        .wrapping_add(offset as u16);
     }
   }
 
@@ -712,7 +752,6 @@ impl CPU {
     self.branch(self.registers.status.contains(Flags::V));
   }
 
-
   /// Jumps & Subroutines
   ///
   /// JSR and RTS affect the stack as the return address is pushed onto or pulled from the stack, respectively.
@@ -730,15 +769,12 @@ impl CPU {
     self.stack_push_u16(self.registers.program_counter + 2 - 1);
     let address = self.get_operand_address(&AddressingMode::Absolute);
     self.registers.program_counter = address;
-
-    print!("JSR {:02X}", address);
   }
 
   /// RTS
   fn return_from_subroutine(&mut self) {
     self.registers.program_counter = self.stack_pop_u16() + 1;
   }
-
 
   /// Interrupts
   /// BRK
@@ -760,7 +796,6 @@ impl CPU {
     self.registers.program_counter = self.stack_pop_u16();
   }
 
-
   /// Other
   /// BIT
   fn test_bits_in_memory_with_accumulator(&mut self, mode: &AddressingMode) {
@@ -770,7 +805,119 @@ impl CPU {
     self.registers.status.set(Flags::N, data & 0x80 == 0x80);
     self.registers.status.set(Flags::V, data & 0x40 == 0x40);
   }
+}
 
+/// impl for illegal opcodes and undocumented instructions
+impl CPU {
+  fn alr(&mut self, mode: &AddressingMode) {
+    let address = self.get_operand_address(mode);
+    let data = self.bus.read(address);
+    self.registers.a = self.registers.a & data;
+    // self.registers.set_nz_flags(self.registers.a);
+    self.shift_one_bit_right_accumulator();
+  }
+
+  fn anc(&mut self, mode: &AddressingMode) {
+    let address = self.get_operand_address(mode);
+    let data = self.bus.read(address);
+    self.registers.a = self.registers.a & data;
+    self.registers.set_nz_flags(self.registers.a);
+    self.registers.status.set(Flags::C, self.registers.status.contains(Flags::N));
+  }
+
+  /// A base value in A is determined based on the contents of A and a constant,
+  /// which may be typically $00, $ff, $ee, etc.
+  /// The value of this constant depends on temperature, the chip series,
+  /// and maybe other factors, as well.
+  /// In order to eliminate these uncertainties from the equation,
+  /// use either 0 as the operand or a value of $FF in the accumulator.
+  fn ane_xaa(&mut self, mode: &AddressingMode) {
+    self.registers.a = self.registers.a | 0 & self.registers.x;
+
+    self.registers.a = self.registers.x;
+    // self.registers.set_nz_flags(self.registers.a);
+    let address = self.get_operand_address(mode);
+    let data = self.bus.read(address);
+    self.registers.a = self.registers.a & data;
+    self.registers.set_nz_flags(self.registers.a);
+  }
+
+  // fn arr(&mut self, mode: &AddressingMode) {
+  //   let address = self.get_operand_address(mode);
+  //   let data = self.bus.read(address);
+  //   self.registers.a = self.registers.a & data;
+  //   self.registers.set_nz_flags(self.registers.a);
+  //   self.rotate_one_bit_right_accumulator();
+  // }
+
+  fn dcp_dcm(&mut self, mode: &AddressingMode) {
+    let address = self.get_operand_address(mode);
+    let mut data = self.bus.read(address);
+    data = data.wrapping_sub(1);
+    self.bus.write(address, data);
+    // self.registers.set_nz_flags(data);
+
+    self.registers.status.set(Flags::C, self.registers.a >= data);
+    self.registers.set_nz_flags(self.registers.a.wrapping_sub(data));
+  }
+
+  fn isc_isb_ins(&mut self, mode: &AddressingMode) {
+    let data = self.increment_memory_by_one(mode);
+    self.registers.add_to_a((data as i8).wrapping_neg().wrapping_sub(1) as u8);
+  }
+
+  fn las_lar(&mut self, mode: &AddressingMode) {
+    let address = self.get_operand_address(mode);
+    let mut data = self.bus.read(address);
+    data = self.registers.stack_pointer & data;
+    self.registers.a = data;
+    self.registers.x = data;
+    self.registers.stack_pointer = data;
+    self.registers.set_nz_flags(data);
+  }
+
+  fn lax(&mut self, mode: &AddressingMode) {
+    let address = self.get_operand_address(mode);
+    let data = self.bus.read(address);
+    self.registers.a = data;
+    self.registers.x = self.registers.a;
+    self.registers.set_nz_flags(self.registers.x);
+  }
+
+  fn rla(&mut self, mode: &AddressingMode) {
+    let data = self.rotate_one_bit_left_memory(mode);
+    let address = self.get_operand_address(mode);
+    self.bus.write(address, data);
+    self.registers.a = self.registers.a & data;
+    self.registers.set_nz_flags(self.registers.a);
+  }
+
+  fn rra(&mut self, mode: &AddressingMode) {
+    let data = self.rotate_one_bit_right_memory(mode);
+    let address = self.get_operand_address(mode);
+    self.bus.write(address, data);
+    self.registers.add_to_a(data);
+  }
+
+  fn sax_axs_aax(&mut self, mode: &AddressingMode) {
+    let address = self.get_operand_address(mode);
+    let data = self.registers.a & self.registers.x;
+    self.bus.write(address, data);
+  }
+
+  fn slo_aso(&mut self, mode: &AddressingMode) {
+    let data = self.shift_left_one_bit_memory(mode);
+    self.registers.a = self.registers.a | data;
+    self.registers.set_nz_flags(self.registers.a);
+  }
+
+  fn sre_lse(&mut self, mode: &AddressingMode) {
+    let data = self.shift_one_bit_right_memory(mode);
+    let address = self.get_operand_address(mode);
+    self.bus.write(address, data);
+    self.registers.a = self.registers.a ^ data;
+    self.registers.set_nz_flags(self.registers.a);
+  }
 }
 
 #[cfg(test)]
@@ -806,5 +953,4 @@ mod test {
 
   //   assert_eq!(cpu.registers.x, 0xc1);
   // }
-
 }
